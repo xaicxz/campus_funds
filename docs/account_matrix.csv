@@ -1,0 +1,31 @@
+﻿Organization,Role Title,Role Code,Login Email,Allowed Functions
+SG,System Administrator,system_admin,admin@campusfunds.test,"User Management, no automatic private financial access"
+SG,SG Financial Administrator,sg_finance,sg.finance@campusfunds.test,Consolidated overview and policy-required SG budget approvals
+SELECT,Organization President,president,select.president@campusfunds.test,"Budget and request reviews, financial monitoring"
+SELECT,Organization Treasurer,treasurer,select.treasurer@campusfunds.test,"Budgets, income/expenses, request reviews"
+SELECT,Organization Adviser,adviser,select.adviser@campusfunds.test,"Approval reviews, transaction verification"
+SELECT,Authorized Financial User,authorized_financial_user,select.authorized@campusfunds.test,Basic assigned portal access (restricted pending finer permissions)
+SELECT,Organization Officer,officer,select.officer@campusfunds.test,Submit and track own fund requests
+SELECT,Organization Member,member,select.member@campusfunds.test,Basic member dashboard only
+SELECT,Auditor / Read-Only Reviewer,auditor,select.auditor@campusfunds.test,Read-only financial reports and audit trail
+PSCAS,Organization President,president,pscas.president@campusfunds.test,"Budget and request reviews, financial monitoring"
+PSCAS,Organization Treasurer,treasurer,pscas.treasurer@campusfunds.test,"Budgets, income/expenses, request reviews"
+PSCAS,Organization Adviser,adviser,pscas.adviser@campusfunds.test,"Approval reviews, transaction verification"
+PSCAS,Authorized Financial User,authorized_financial_user,pscas.authorized@campusfunds.test,Basic assigned portal access (restricted pending finer permissions)
+PSCAS,Organization Officer,officer,pscas.officer@campusfunds.test,Submit and track own fund requests
+PSCAS,Organization Member,member,pscas.member@campusfunds.test,Basic member dashboard only
+PSCAS,Auditor / Read-Only Reviewer,auditor,pscas.auditor@campusfunds.test,Read-only financial reports and audit trail
+JPIA,Organization President,president,jpia.president@campusfunds.test,"Budget and request reviews, financial monitoring"
+JPIA,Organization Treasurer,treasurer,jpia.treasurer@campusfunds.test,"Budgets, income/expenses, request reviews"
+JPIA,Organization Adviser,adviser,jpia.adviser@campusfunds.test,"Approval reviews, transaction verification"
+JPIA,Authorized Financial User,authorized_financial_user,jpia.authorized@campusfunds.test,Basic assigned portal access (restricted pending finer permissions)
+JPIA,Organization Officer,officer,jpia.officer@campusfunds.test,Submit and track own fund requests
+JPIA,Organization Member,member,jpia.member@campusfunds.test,Basic member dashboard only
+JPIA,Auditor / Read-Only Reviewer,auditor,jpia.auditor@campusfunds.test,Read-only financial reports and audit trail
+CRIM,Organization President,president,crim.president@campusfunds.test,"Budget and request reviews, financial monitoring"
+CRIM,Organization Treasurer,treasurer,crim.treasurer@campusfunds.test,"Budgets, income/expenses, request reviews"
+CRIM,Organization Adviser,adviser,crim.adviser@campusfunds.test,"Approval reviews, transaction verification"
+CRIM,Authorized Financial User,authorized_financial_user,crim.authorized@campusfunds.test,Basic assigned portal access (restricted pending finer permissions)
+CRIM,Organization Officer,officer,crim.officer@campusfunds.test,Submit and track own fund requests
+CRIM,Organization Member,member,crim.member@campusfunds.test,Basic member dashboard only
+CRIM,Auditor / Read-Only Reviewer,auditor,crim.auditor@campusfunds.test,Read-only financial reports and audit trail
