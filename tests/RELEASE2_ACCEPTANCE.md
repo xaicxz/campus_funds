@@ -34,3 +34,19 @@ This is a **manual execution plan**, **not** a claim that all checks have passed
 **Finance test sequence:** Start with posted income PHP 20,000. Approve a PHP 10,000 request. Post PHP 8,000 advance, submit PHP 6,500 itemized spending, post PHP 1,500 return, have Treasurer and Adviser verify, then President close. Expected final cash PHP 13,500; recognized spending PHP 6,500; unpaid commitment PHP 0. Check permissions by switching user account after every stage.
 
 **Go/no-go:** No live-money rollout until all 26 tests (particularly financial concurrency and cross-organization access), backup restore, written campus finance policy and Philippine data-privacy review are completed and recorded.
+
+## Corrective patch regression scenarios (11 November 2026)
+
+| ID | Scenario | Expected result |
+|---|---|---|
+| FIX-01 | Use ₱10,000 approved, ₱8,000 advanced, ₱6,500 verified, ₱1,500 returned and ₱2,000 released at closure; run budget report | Uncommitted reservation for that request is **₱0**, not ₱1,500; recognized spending is ₱6,500. |
+| FIX-02 | Give organization Account A ₱0 and Account B ₱2,000; try posting a ₱500 direct expense on A | Posting rejected even though total organization cash is adequate. |
+| FIX-03 | Have one user hold Treasurer and Adviser, and attempt both review stages of the same request; repeat for President and Adviser budget stages | Second review rejected and no extra approval record created. |
+| FIX-04 | President closes a partially paid direct-pay request with a reason after all pending transactions are resolved | Remaining commitment released; posted expenses remain; `closed_at`, audit entry, notification stored. |
+| FIX-05 | Try the direct-pay closure action on an advance-funded request or one with a pending transaction | Action rejected; no commitment or status changed. |
+| FIX-06 | Create an expense against an open request, close that request, then attempt to post the expense | Closure should be blocked until pending entry resolves; posting against a closed request is independently blocked. |
+| FIX-07 | Deactivate a logged-in user in the database, then refresh a protected page or POST a notification action | User is returned to login and the protected action is not executed. |
+| FIX-08 | Officer with no finance role visits budgets page | Only approved budgets/allocations appear, not pending or rejected proposals. |
+| FIX-09 | User with only a Member role attempts a POST `liquidation_submit` for a request they originally created when an Officer | POST forbidden. |
+| FIX-10 | Post a negative cash position using preexisting data and generate a report | Negative values render as e.g. `-1.50` without an extra minus in the cents field. |
+| FIX-11 | Re-submit a completed deadline using a stale form | Rejected; no duplicate completion audit event. |

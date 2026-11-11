@@ -29,7 +29,17 @@ function e(mixed $x): string { return htmlspecialchars((string)$x, ENT_QUOTES | 
 function csrf(): string { return $_SESSION['csrf'] ??= bin2hex(random_bytes(24)); }
 function check_csrf(): void { if (!hash_equals(csrf(), (string)($_POST['csrf'] ?? ''))) abort(419, 'Invalid request token. Please reload.'); }
 function me(): ?array { return $_SESSION['user'] ?? null; }
-function login_required(): void { if (!me()) { header('Location: index.php?page=login'); exit; } }
+function login_required(): void {
+    if (!me()) { header('Location: index.php?page=login'); exit; }
+    // Never rely on a stale login session after an administrator disables an account.
+    $user=one('SELECT id,full_name,email FROM users WHERE id=? AND is_active=1',[(int)me()['id']]);
+    if (!$user) {
+        $_SESSION=[];
+        session_regenerate_id(true);
+        header('Location: index.php?page=login'); exit;
+    }
+    $_SESSION['user']=['id'=>(int)$user['id'],'name'=>$user['full_name'],'email'=>$user['email']];
+}
 function my_roles(?int $org = null): array {
     if (!me()) return [];
     $sql='SELECT r.role,r.organization_id,o.name AS organization_name,o.code FROM organization_user_roles r JOIN organizations o ON o.id=r.organization_id WHERE r.user_id=? AND r.active=1 AND o.active=1';
@@ -74,8 +84,21 @@ function cents(mixed $raw): int {
     if ($value<=0) abort(422,'Amount must be above zero.');
     return $value;
 }
-function cents_db(mixed $raw): int { return (int)round((float)$raw*100); }
-function peso_str(int $cents): string { return sprintf('%d.%02d',intdiv($cents,100),$cents%100); }
+function cents_db(mixed $raw): int {
+    // MySQL DECIMAL is returned as a string. Never go through binary floats.
+    $raw=trim((string)$raw);
+    if (!preg_match('/^-?\d+(?:\.\d{1,2})?$/D',$raw)) throw new InvalidArgumentException('Invalid database money value.');
+    $negative=str_starts_with($raw,'-');
+    if ($negative) $raw=substr($raw,1);
+    [$whole,$fraction]=array_pad(explode('.',$raw,2),2,'');
+    $amount=(int)$whole*100+(int)str_pad($fraction,2,'0');
+    return $negative?-$amount:$amount;
+}
+function peso_str(int $cents): string {
+    $sign=$cents<0?'-':'';
+    $absolute=abs($cents);
+    return sprintf('%s%d.%02d',$sign,intdiv($absolute,100),$absolute%100);
+}
 function audit(string $action,string $type,int $entity,?int $org,string $details=''): void {
     execute_sql('INSERT INTO audit_logs (actor_id,organization_id,action,entity_type,entity_id,details) VALUES (?,?,?,?,?,?)',
         [me()['id'] ?? null,$org,$action,$type,$entity,$details]);

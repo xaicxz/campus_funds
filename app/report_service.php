@@ -71,8 +71,10 @@ function r2_report_query(int $org,string $type,string $from,string $to,bool $sg=
         $d=rows("SELECT l.*,u.full_name actor FROM audit_logs l LEFT JOIN users u ON u.id=l.actor_id WHERE l.organization_id=? AND DATE(l.created_at) BETWEEN ? AND ? ORDER BY l.id DESC LIMIT 2000",[$org,$from,$to]);
         foreach($d as $x)$records[]=[$x['created_at'],$x['actor']??'System',$x['action'],$x['entity_type'].' #'.$x['entity_id'],$x['details']??''];
     }
-    return ['title'=>r2_report_types(false)[$type], 'headers'=>$headers,'records'=>$records,
-        'basis'=>'Posted cash events and verified liquidation items only; request/reservation figures shown separately'];
+    $basis=($type==='budgets')
+        ? 'Current approved budget totals and current reservations. Date range is not applied to this snapshot.'
+        : 'Posted cash events and verified liquidation items only; request/reservation figures shown separately. Status figures reflect the current state.';
+    return ['title'=>r2_report_types(false)[$type], 'headers'=>$headers,'records'=>$records,'basis'=>$basis];
 }
 function r2_escaped_csv_value(mixed $text): string {
     $s=(string)$text;

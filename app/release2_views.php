@@ -75,7 +75,8 @@ function liquidation_page(): void {
             foreach($decisions as $d)echo '<p><strong>'.e($d['stage']).': '.e($d['decision']).'</strong> — '.e($d['reviewer']).' · '.e($d['decided_at']).' '.e($d['reason']??'').'</p>';
         }
         $stage=['submitted'=>'treasurer','under_review'=>'adviser','verified'=>'president'][$c['status']]??null;
-        if($stage && has_role($stage,$org) && (int)$c['requested_by']!==(int)me()['id']) {
+        if($stage && has_role($stage,$org) && (int)$c['requested_by']!==(int)me()['id']
+           && !one('SELECT id FROM liquidation_decisions WHERE submission_id=(SELECT id FROM liquidation_submissions WHERE liquidation_id=? ORDER BY version_number DESC LIMIT 1) AND reviewer_id=? LIMIT 1',[$selected,me()['id']])) {
             echo '<h3>'.e(ucfirst($stage)).' review</h3>';form_start('liquidation_decide',$org,'form-grid');echo '<input type="hidden" name="id" value="'.$selected.'"><label>Decision<select name="decision">';
             $opts=$stage==='president'?['closed'=>'Close balanced case']:['approved'=>'Approve and forward','returned'=>'Return for revision','rejected'=>'Reject submission'];
             foreach($opts as $val=>$label)echo '<option value="'.e($val).'">'.e($label).'</option>';
@@ -107,7 +108,16 @@ function notifications_page(): void {
     shell_start('Notifications');
     $items=rows("SELECT n.*,o.name organization FROM notifications n LEFT JOIN organizations o ON o.id=n.organization_id WHERE n.user_id=? ORDER BY n.is_read ASC,n.id DESC LIMIT 150",[me()['id']]);
     echo '<section class="panel"><h2>My notification inbox</h2><p class="subline">Only alerts assigned to this signed-in account are visible.</p><div class="table-scroll"><table><thead><tr><th>Date</th><th>Organization</th><th>Message</th><th>Read</th></tr></thead><tbody>';
-    foreach($items as $a){echo '<tr><td>'.e($a['created_at']).'</td><td>'.e($a['organization']??'—').'</td><td>'.e($a['message']).'</td><td>';if(!$a['is_read']){form_start('notification_read');echo '<input type="hidden" name="id" value="'.(int)$a['id'].'"><button class="btn small">Mark read</button></form>';}else echo 'Read';echo '</td></tr>';}
+    foreach($items as $a){
+        echo '<tr><td>'.e($a['created_at']).'</td><td>'.e($a['organization']??'—').'</td><td>'.e($a['message']);
+        $allowed=['budgets','requests','transactions','liquidations','calendar','reports'];
+        if(in_array($a['link_page'],$allowed,true)){
+            $params=['page'=>$a['link_page']];
+            if((int)$a['organization_id']>1)$params['org']=(int)$a['organization_id'];
+            echo ' <a href="index.php?'.e(http_build_query($params)).'">View record area</a>';
+        }
+        echo '</td><td>';if(!$a['is_read']){form_start('notification_read');echo '<input type="hidden" name="id" value="'.(int)$a['id'].'"><button class="btn small">Mark read</button></form>';}else echo 'Read';echo '</td></tr>';
+    }
     if(!$items)echo '<tr><td colspan="4" class="empty">No notifications.</td></tr>';echo '</tbody></table></div></section>';shell_end();
 }
 function r2_reports_page(): void {

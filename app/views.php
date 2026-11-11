@@ -183,7 +183,9 @@ function budgets_page(): void {
           WHERE b.status='pending_sg' ORDER BY b.id DESC");
         echo '<section class="panel"><h2>SG approval inbox</h2><p class="subline">These budget proposals reached the optional SG review stage.</p><div class="table-scroll"><table><thead><tr><th>Organization</th><th>Budget</th><th>Submitted by</th><th>Decision</th></tr></thead><tbody>';
         foreach($queue as $q){ echo '<tr><td>'.e($q['org_name']).'</td><td>'.e($q['name']).'</td><td>'.e($q['creator']).'</td><td>';
-            if ((int)$q['id']>0 && (int)$q['created_by']!==(int)me()['id']) decision_form('budget_decision',(int)$q['organization_id'],(int)$q['id']);
+            if ((int)$q['id']>0 && (int)$q['created_by']!==(int)me()['id']
+                && !one('SELECT id FROM budget_approvals WHERE budget_id=? AND actor_id=? LIMIT 1',[$q['id'],me()['id']]))
+                decision_form('budget_decision',(int)$q['organization_id'],(int)$q['id']);
             else echo '—'; echo '</td></tr>'; }
         if (!$queue) echo '<tr><td colspan="4" class="empty">No budgets are awaiting SG review.</td></tr>';
         echo '</tbody></table></div></section>';
@@ -200,13 +202,16 @@ function budgets_page(): void {
             echo '<template id="budget-row-template"><div class="liquidation-row"><div class="line-heading"><span class="line-number">Category</span><button type="button" class="remove-line" data-budget-remove>Remove</button></div><div class="form-grid"><label>Category name<input data-field="category" maxlength="100" placeholder="e.g. Events" required></label><label>Allocation (PHP)<input data-field="amount" type="number" min="0.01" step="0.01" placeholder="0.00" required></label></div></div></template></div>';
             echo '<div class="wide"><button class="btn primary">Submit for approval</button></div></form></section>';
         }
+        $budgetReader=has_role('treasurer',$org)||has_role('president',$org)||has_role('adviser',$org)||has_role('auditor',$org);
+        $filter=$budgetReader?'':" AND b.status='approved'";
         $list=rows("SELECT b.*,u.full_name creator,COALESCE(SUM(bl.allocated),0) total FROM budgets b JOIN users u ON u.id=b.created_by
-          LEFT JOIN budget_lines bl ON bl.budget_id=b.id WHERE b.organization_id=? GROUP BY b.id ORDER BY b.id DESC",[$org]);
+          LEFT JOIN budget_lines bl ON bl.budget_id=b.id WHERE b.organization_id=?".$filter." GROUP BY b.id ORDER BY b.id DESC",[$org]);
         echo '<section class="panel"><h2>Budget proposals</h2><div class="table-scroll"><table><thead><tr><th>Budget</th><th>Type</th><th>Allocation</th><th>Created by</th><th>Status / next stage</th><th>Decision</th></tr></thead><tbody>';
         foreach($list as $b){
             echo '<tr><td><strong>'.e($b['name']).'</strong><small>#'.(int)$b['id'].'</small></td><td>'.e(ucfirst($b['budget_type'])).'</td><td>'.money($b['total']).'</td><td>'.e($b['creator']).'</td><td>'.status_badge($b['status']).'</td><td>';
             $stage=['pending_president'=>'president','pending_adviser'=>'adviser','pending_sg'=>'sg_finance'][$b['status']]??null;
             $may=$stage && (int)$b['created_by']!==(int)me()['id'] && ($stage==='sg_finance'?has_role('sg_finance',1):has_role($stage,$org));
+            if ($may && one('SELECT id FROM budget_approvals WHERE budget_id=? AND actor_id=? LIMIT 1',[$b['id'],me()['id']])) $may=false;
             if ($may) decision_form('budget_decision',$org,(int)$b['id']);else echo '<span class="muted">—</span>';
             echo '</td></tr>';
         }
@@ -241,16 +246,27 @@ function requests_page(): void {
             echo '<div class="wide"><button class="btn primary" '.(!$budgets?'disabled':'').'>Submit request</button></div></form></section>';
         }
         $isReviewer=has_role('treasurer',$org)||has_role('president',$org)||has_role('adviser',$org)||has_role('auditor',$org);
-        $sql="SELECT r.*,u.full_name requester,b.name budget_name FROM fund_requests r JOIN users u ON u.id=r.requested_by JOIN budgets b ON b.id=r.budget_id WHERE r.organization_id=?";
+        $sql="SELECT r.*,u.full_name requester,b.name budget_name,
+            EXISTS(SELECT 1 FROM liquidations l WHERE l.fund_request_id=r.id) AS has_liquidation,
+            EXISTS(SELECT 1 FROM financial_transactions t WHERE t.fund_request_id=r.id AND t.transaction_type='advance_disbursement') AS has_advance
+            FROM fund_requests r JOIN users u ON u.id=r.requested_by JOIN budgets b ON b.id=r.budget_id WHERE r.organization_id=?";
         $bind=[$org];
         if (!$isReviewer) { $sql.=' AND r.requested_by=?'; $bind[]=me()['id']; }
         $list=rows($sql.' ORDER BY r.id DESC',$bind);
-        echo '<section class="panel"><h2>Request tracker</h2><div class="table-scroll"><table><thead><tr><th>Reference / title</th><th>Requested by</th><th>Budget</th><th>Amount</th><th>Status</th><th>Action</th></tr></thead><tbody>';
+        echo '<section class="panel"><h2>Request tracker</h2><p class="subline">The President may close a completed or cancelled direct-pay request to release its unused approval. Requests with advances must complete liquidation instead.</p><div class="table-scroll"><table><thead><tr><th>Reference / title</th><th>Requested by</th><th>Budget</th><th>Amount</th><th>Status</th><th>Action</th></tr></thead><tbody>';
         foreach($list as $r){
-            echo '<tr><td><strong>'.e($r['title']).'</strong><small>'.e($r['reference_no']).'</small></td><td>'.e($r['requester']).'</td><td>'.e($r['budget_name']).'</td><td>'.money($r['amount']).'</td><td>'.status_badge($r['status']).'</td><td>';
+            echo '<tr><td><strong>'.e($r['title']).'</strong><small>'.e($r['reference_no']).'</small></td><td>'.e($r['requester']).'</td><td>'.e($r['budget_name']).'</td><td>'.money($r['amount']).'</td><td>'.status_badge($r['status']).($r['closed_at']?' <small>Closed '.e($r['closed_at']).'</small>':'').'</td><td>';
             $stage=['pending_treasurer'=>'treasurer','pending_adviser'=>'adviser','pending_president'=>'president'][$r['status']]??null;
-            if ($stage && has_role($stage,$org) && (int)$r['requested_by']!==(int)me()['id']) decision_form('request_decision',$org,(int)$r['id']);
-            else echo '<span class="muted">—</span>';
+            if ($stage && has_role($stage,$org) && (int)$r['requested_by']!==(int)me()['id']
+                && !one('SELECT id FROM fund_request_approvals WHERE fund_request_id=? AND actor_id=? LIMIT 1',[$r['id'],me()['id']]))
+                decision_form('request_decision',$org,(int)$r['id']);
+            elseif ($r['status']==='approved' && $r['closed_at']===null && !$r['has_liquidation'] && !$r['has_advance'] && has_role('president',$org)
+                && (int)$r['requested_by']!==(int)me()['id']) {
+                form_start('close_direct_request',$org,'inline-decision');
+                echo '<input type="hidden" name="id" value="'.(int)$r['id'].'">';
+                echo '<input name="reason" maxlength="500" required placeholder="Why close / cancel?" aria-label="Reason for closing direct-pay request">';
+                echo '<button class="btn small" type="submit">Close direct-pay request</button></form>';
+            } else echo '<span class="muted">—</span>';
             echo '</td></tr>';
         }
         if (!$list) echo '<tr><td colspan="6" class="empty">No funding requests yet.</td></tr>';
@@ -265,7 +281,7 @@ function transactions_page(): void {
         $accounts=rows('SELECT id,name FROM financial_accounts WHERE organization_id=? ORDER BY id',[$org]);
         $lines=rows("SELECT bl.id,CONCAT(b.name,' / ',bl.category,' (',bl.allocated,')') title FROM budget_lines bl JOIN budgets b ON b.id=bl.budget_id
                       WHERE b.organization_id=? AND b.status='approved' ORDER BY b.name,bl.category",[$org]);
-        $requests=rows("SELECT id,reference_no,title FROM fund_requests WHERE organization_id=? AND status='approved' ORDER BY id DESC",[$org]);
+        $requests=rows("SELECT id,reference_no,title FROM fund_requests WHERE organization_id=? AND status='approved' AND closed_at IS NULL ORDER BY id DESC",[$org]);
         if (has_role('treasurer',$org)) {
             echo '<section class="panel"><h2>Record income or expense</h2><p class="subline">New entries are pending. An independent Adviser must verify and post them before cash totals change.</p>';
             form_start('create_tx',$org,'form-grid');

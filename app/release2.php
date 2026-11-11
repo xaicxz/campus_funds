@@ -52,12 +52,17 @@ function r2_budget_line_left(int $lineId): int {
     $items=one("SELECT COALESCE(SUM(i.amount),0) total FROM liquidation_items i JOIN liquidation_submissions s ON s.id=i.submission_id JOIN liquidations l ON l.final_submission_id=s.id WHERE i.budget_line_id=? AND l.status IN ('verified','closed')",[$lineId]);
     return cents_db($line['allocated'])-cents_db($direct['total'])-cents_db($items['total']);
 }
+function r2_request_budget_reservation(int $approved,array $totals,int $released): int {
+    // Approved funds are reserved until they are spent, returned, or formally cancelled.
+    // Subtract returns once, or a closed case will continue to reserve already returned cash.
+    return max(0,$approved-$totals['direct']-$totals['recognized']-$totals['returns']-$released);
+}
 function r2_budget_reservations(int $budgetId): int {
     $requests=rows("SELECT id,organization_id,amount,commitment_released FROM fund_requests WHERE budget_id=? AND status='approved'",[$budgetId]);
     $reservation=0;
     foreach($requests as $r) {
         $tot=r2_request_totals((int)$r['organization_id'],(int)$r['id']);
-        $reservation+=max(0,cents_db($r['amount'])-$tot['direct']-$tot['recognized']-cents_db($r['commitment_released']));
+        $reservation+=r2_request_budget_reservation(cents_db($r['amount']),$tot,cents_db($r['commitment_released']));
     }
     return $reservation;
 }
@@ -133,7 +138,7 @@ function r2_handle_action(string $action): never {
         if(!has_role('system_admin',1))abort(403,'Administrator configuration only.');
         $org=(int)($_POST['target_org']??0);$days=(int)($_POST['due_days']??0);
         if($days<1||$days>180||!one('SELECT id FROM organizations WHERE id=? AND is_sg=0',[$org]))abort(422,'Choose an organization and a deadline between 1 and 180 days.');
-        execute_sql('UPDATE organization_settings SET liquidation_due_days=? WHERE organization_id=?',[$days,$org]);
+        execute_sql('INSERT INTO organization_settings (organization_id,liquidation_due_days) VALUES (?,?) ON DUPLICATE KEY UPDATE liquidation_due_days=VALUES(liquidation_due_days)',[$org,$days]);
         audit('change_liquidation_policy','organization',$org,$org,'Due days: '.$days);
         redirect_to('users',null,'Liquidation due-day policy updated.');
     }
@@ -151,7 +156,8 @@ function r2_handle_action(string $action): never {
     }
     if ($action==='calendar_complete') {
         $org=selected_org();require_role($org,['treasurer']);$id=(int)($_POST['id']??0);
-        execute_sql("UPDATE financial_calendar_items SET completed_at=NOW() WHERE id=? AND organization_id=? AND item_type='manual' AND completed_at IS NULL",[$id,$org]);
+        $updated=execute_sql("UPDATE financial_calendar_items SET completed_at=NOW() WHERE id=? AND organization_id=? AND item_type='manual' AND completed_at IS NULL",[$id,$org]);
+        if (!$updated) abort(409,'Deadline is already complete or no longer available.');
         audit('complete_deadline','calendar',$id,$org,'Manual deadline completed');redirect_to('calendar',$org,'Deadline marked complete.');
     }
     if ($action==='record_advance' || $action==='record_return') {
@@ -191,7 +197,7 @@ function r2_handle_action(string $action): never {
         redirect_to('liquidations',$org,'Cash movement recorded; Adviser verification is required before posting.');
     }
     if ($action==='liquidation_submit') {
-        $org=selected_org();$request=(int)($_POST['request_id']??0);
+        $org=selected_org();require_role($org,['officer']);$request=(int)($_POST['request_id']??0);
         $raw=trim((string)($_POST['items']??''));
         $lines=array_values(array_filter(preg_split('/\r\n|\n|\r/',$raw),fn($s)=>trim($s)!==''));
         $files=r2_upload_array('proofs');

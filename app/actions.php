@@ -2,7 +2,7 @@
 declare(strict_types=1);
 require_once __DIR__.'/bootstrap.php';
 
-function store_upload(int $txId,int $org,array $file): void {
+function store_upload(int $txId,int $org,array $file): string {
     if (($file['error']??UPLOAD_ERR_NO_FILE)===UPLOAD_ERR_NO_FILE) abort(422,'A receipt or invoice is required for expenses.');
     if ($file['error']!==UPLOAD_ERR_OK || $file['size']>5*1024*1024 || $file['size']<=0) abort(422,'Upload a valid file no larger than 5 MB.');
     $mime=(new finfo(FILEINFO_MIME_TYPE))->file($file['tmp_name']);
@@ -17,6 +17,7 @@ function store_upload(int $txId,int $org,array $file): void {
         [$txId,$name,substr(basename((string)$file['name']),0,255),$mime,me()['id']]);
     } catch (Throwable $e) { @unlink($storage.'/'.$name); throw $e; }
     audit('upload','transaction',$txId,$org,'Receipt added');
+    return $name;
 }
 function handle_action(string $action): never {
     if ($_SERVER['REQUEST_METHOD']!=='POST') abort(405,'POST required.');
@@ -61,8 +62,9 @@ function handle_action(string $action): never {
         $allowed=['system_admin','sg_finance','president','treasurer','adviser','authorized_financial_user','officer','member','auditor'];
         if (!in_array($role,$allowed,true)) abort(422,'Invalid role.');
         $sg=in_array($role,['system_admin','sg_finance'],true);
-        if ($sg && $org!==1 || !$sg && ($org<2 || $org>5)) abort(422,'Choose the correct organization for this role.');
-        if (!one('SELECT id FROM organizations WHERE id=? AND active=1',[$org])) abort(422,'Organization not found.');
+        $target=one('SELECT is_sg FROM organizations WHERE id=? AND active=1',[$org]);
+        if (!$target || ($sg && ((int)$target['is_sg']!==1 || $org!==1)) || (!$sg && (int)$target['is_sg']!==0))
+            abort(422,'Choose an active participating organization for this role.');
         db()->beginTransaction();
         try {
             $existing=one('SELECT id FROM users WHERE email=?',[$email]);
@@ -132,7 +134,9 @@ function handle_action(string $action): never {
             $stage=$stages[$b['status']];
             if ($stage==='sg_finance') { if (!has_role('sg_finance',1)) abort(403,'SG review permission required.'); }
             else require_role($org,[$stage]);
-            if ((int)$b['created_by']===(int)me()['id']) abort(403,'You cannot approve your own budget.');
+            if ((int)$b['created_by']===(int)me()['id']) abort(403,'You cannot review your own budget.');
+            if (one('SELECT id FROM budget_approvals WHERE budget_id=? AND actor_id=? LIMIT 1',[$id,me()['id']]))
+                abort(403,'A different reviewer must handle each budget approval stage.');
             $next=$decision==='rejected'?'rejected':match($stage){
                 'president'=>'pending_adviser',
                 'adviser'=>(int)(one('SELECT require_sg_budget_approval FROM organization_settings WHERE organization_id=?',[$org])['require_sg_budget_approval']??0) ? 'pending_sg' : 'approved',
@@ -156,10 +160,14 @@ function handle_action(string $action): never {
         $purpose=safe_text((string)($_POST['purpose']??''),2000);
         $date=must_date((string)($_POST['activity_date']??''));
         $amount=peso_str(cents((string)($_POST['amount']??'')));
-        execute_sql('INSERT INTO fund_requests (organization_id,budget_id,reference_no,title,purpose,activity_date,amount,requested_by) VALUES (?,?,?,?,?,?,?,?)',
-           [$org,$budget,request_ref(),$title,$purpose,$date,$amount,me()['id']]);
-        $id=(int)db()->lastInsertId(); audit('submit_request','fund_request',$id,$org,$title);
-        r2_notify_roles($org,['treasurer'],'request-created:'.$id,'New fund request '.$title.' awaits Treasurer review.','requests');
+        db()->beginTransaction();
+        try {
+            execute_sql('INSERT INTO fund_requests (organization_id,budget_id,reference_no,title,purpose,activity_date,amount,requested_by) VALUES (?,?,?,?,?,?,?,?)',
+                [$org,$budget,request_ref(),$title,$purpose,$date,$amount,me()['id']]);
+            $id=(int)db()->lastInsertId(); audit('submit_request','fund_request',$id,$org,$title);
+            r2_notify_roles($org,['treasurer'],'request-created:'.$id,'New fund request '.$title.' awaits Treasurer review.','requests');
+            db()->commit();
+        } catch(Throwable $e){db()->rollBack();throw $e;}
         redirect_to('requests',$org,'Fund request sent for Treasurer review.');
     }
     if ($action==='request_decision') {
@@ -176,7 +184,9 @@ function handle_action(string $action): never {
             $stages=['pending_treasurer'=>'treasurer','pending_adviser'=>'adviser','pending_president'=>'president'];
             if (!isset($stages[$r['status']])) abort(409,'Request is not awaiting approval.');
             $stage=$stages[$r['status']]; require_role($org,[$stage]);
-            if ((int)$r['requested_by']===(int)me()['id']) abort(403,'You cannot approve your own request.');
+            if ((int)$r['requested_by']===(int)me()['id']) abort(403,'You cannot review your own request.');
+            if (one('SELECT id FROM fund_request_approvals WHERE fund_request_id=? AND actor_id=? LIMIT 1',[$id,me()['id']]))
+                abort(403,'A different reviewer must handle each fund-request approval stage.');
             if ($decision==='approved' && $stage==='president') {
                 if (cash_summary($org)['available']<cents_db($r['amount'])) abort(422,'Insufficient uncommitted cash for final approval.');
                 if (budget_left((int)$r['budget_id'])-r2_budget_reservations((int)$r['budget_id'])<cents_db($r['amount'])) abort(422,'Insufficient uncommitted budget allocation.');
@@ -191,6 +201,38 @@ function handle_action(string $action): never {
             db()->commit();
         } catch(Throwable $e){db()->rollBack();throw $e;}
         redirect_to('requests',$org,'Request decision recorded.');
+    }
+    if ($action==='close_direct_request') {
+        // A completed/cancelled direct-pay request must not reserve its unused approval forever.
+        $org=selected_org();require_role($org,['president']);
+        $id=(int)($_POST['id']??0);
+        $reason=safe_text((string)($_POST['reason']??''),500);
+        db()->beginTransaction();
+        try {
+            one('SELECT id FROM organizations WHERE id=? FOR UPDATE',[$org]);
+            $r=r2_request($id,$org,true);
+            if ($r['status']!=='approved' || $r['closed_at']!==null) abort(409,'Request must be approved and open.');
+            if ((int)$r['requested_by']===(int)me()['id']) abort(403,'A request owner cannot close their own request.');
+            if (one('SELECT id FROM liquidations WHERE fund_request_id=? LIMIT 1',[$id]))
+                abort(409,'Advance requests must close through the verified liquidation process.');
+            if (one("SELECT id FROM financial_transactions WHERE fund_request_id=? AND status='pending' LIMIT 1",[$id]))
+                abort(409,'Pending financial entries must be resolved before closing this request.');
+            $tot=r2_request_totals($org,$id);
+            if ($tot['advances']>0 || $tot['returns']>0 || $tot['recognized']>0)
+                abort(409,'This request contains advances and requires liquidation.');
+            $remaining=cents_db($r['amount'])-$tot['direct']-cents_db($r['commitment_released']);
+            if ($remaining<0) abort(409,'Request has inconsistent released commitments.');
+            execute_sql('UPDATE fund_requests SET commitment_released=commitment_released+?,closed_at=NOW() WHERE id=? AND organization_id=?',
+                [peso_str($remaining),$id,$org]);
+            audit('close_direct_request','fund_request',$id,$org,json_encode([
+                'reason'=>$reason,'posted_direct'=>peso_str($tot['direct']),
+                'released_unpaid'=>peso_str($remaining),'closed_by'=>me()['id']
+            ],JSON_UNESCAPED_UNICODE));
+            r2_notify((int)$r['requested_by'],$org,'direct-request-closed:'.$id,
+                'Direct-pay request '.$r['reference_no'].' is closed: '.$reason,'requests');
+            db()->commit();
+        } catch(Throwable $e){db()->rollBack();throw $e;}
+        redirect_to('requests',$org,'Request closed and unused approval released.');
     }
     if ($action==='create_tx') {
         $org=selected_org();require_role($org,['treasurer']);
@@ -213,23 +255,24 @@ function handle_action(string $action): never {
             $raw=(int)($_POST['fund_request_id']??0);
             if ($raw) {
                 $r=one("SELECT r.id FROM fund_requests r WHERE r.id=? AND r.organization_id=?
-                      AND r.budget_id=? AND r.status='approved'",[$raw,$org,$b['budget_id']]);
+                      AND r.budget_id=? AND r.status='approved' AND r.closed_at IS NULL",[$raw,$org,$b['budget_id']]);
                 if (!$r) abort(422,'The linked request must be approved and belong to this budget.');
                 $request=$raw;
             }
             if (!isset($_FILES['receipt'])) abort(422,'Please attach a receipt or invoice.');
         }
+        $uploaded=null;
         db()->beginTransaction();
         try {
             execute_sql('INSERT INTO financial_transactions
              (organization_id,account_id,budget_line_id,fund_request_id,transaction_type,category,description,amount,occurred_on,payment_method,created_by)
              VALUES (?,?,?,?,?,?,?,?,?,?,?)',[$org,$account,$line,$request,$type,$category,$description,$amount,$date,$method,me()['id']]);
             $id=(int)db()->lastInsertId();
-            if ($type==='expense') store_upload($id,$org,$_FILES['receipt']);
+            if ($type==='expense') $uploaded=store_upload($id,$org,$_FILES['receipt']);
             audit('create_transaction','transaction',$id,$org,$type.' '.$amount);
             r2_notify_roles($org,['adviser'],'transaction-new:'.$id,'New '. $type .' requires independent verification','transactions');
             db()->commit();
-        } catch(Throwable $e){db()->rollBack();throw $e;}
+        } catch(Throwable $e){db()->rollBack();if($uploaded!==null)@unlink(dirname(__DIR__).'/storage/uploads/'.$uploaded);throw $e;}
         redirect_to('transactions',$org,'Record saved as pending verification (no balance changed).');
     }
     if ($action==='post_tx') {
@@ -248,10 +291,12 @@ function handle_action(string $action): never {
                 if (!$bl || $bl['status']!=='approved') abort(422,'Budget is not approved.');
                 if (r2_budget_line_left((int)$t['budget_line_id'])<cents_db($t['amount'])) abort(422,'Budget category would be overspent.');
                 if(!$t['fund_request_id'] && budget_left((int)$bl['budget_id'])-r2_budget_reservations((int)$bl['budget_id'])<cents_db($t['amount']))abort(422,'Uncommitted budget would be overspent.');
+                // An organization may have cash in another account; never overdraw the selected one.
+                if (r2_account_cash((int)$t['account_id'])<cents_db($t['amount'])) abort(422,'Insufficient cash in the selected financial account.');
                 $cash=cash_summary($org);
                 if ($t['fund_request_id']) {
-                    $r=one("SELECT * FROM fund_requests WHERE id=? AND organization_id=? AND status='approved'",[$t['fund_request_id'],$org]);
-                    if (!$r || (int)$r['budget_id']!==(int)$bl['budget_id']) abort(422,'Fund request is no longer valid.');
+                    $r=one("SELECT * FROM fund_requests WHERE id=? AND organization_id=? AND status='approved' AND closed_at IS NULL",[$t['fund_request_id'],$org]);
+                    if (!$r || (int)$r['budget_id']!==(int)$bl['budget_id'] || $r['closed_at']!==null) abort(422,'Fund request is no longer open and approved.');
                     $tot=r2_request_totals($org,(int)$r['id']);
                     if ($tot['advances']>0) abort(409,'Direct expenses cannot be mixed with cash advances for one request.');
                     if (cents_db($r['amount'])-$tot['direct']-cents_db($r['commitment_released'])<cents_db($t['amount'])) abort(422,'Expense exceeds remaining approved request.');
@@ -305,6 +350,7 @@ function serve_receipt(int $id): never {
     if (!is_file($p)) abort(404,'File unavailable.');
     header('Content-Type: '.$a['mime_type']);
     header('X-Content-Type-Options: nosniff');
+    header('Cache-Control: private, no-store, max-age=0');
     header('Content-Disposition: attachment; filename="receipt-'.(int)$id.'.'.pathinfo($a['stored_name'],PATHINFO_EXTENSION).'"');
     header('Content-Length: '.filesize($p));
     readfile($p);exit;

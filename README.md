@@ -125,4 +125,6 @@ The official display tagline appears on the sign-in introduction, organization d
 
 This is a presentation-only update; the database, login credentials, approval rules, and existing financial workflows are unchanged.
 
-ps:
+## Source-code corrective update (11 November 2026)
+
+See `docs/SOURCE_CODE_FIXES_2026-11-11.md` for patched financial, access-control and workflow issues, installation cautions, and explicitly remaining production blockers. Run `php tests/regression_finance.php` as well as the original smoke tests. A new President-only `close_direct_request` form closes approved direct-pay requests with unused funds; **do not use it for advance requests**, which require liquidation. No extra SQL migration is required for this corrective patch on top of a Release 2 database.
